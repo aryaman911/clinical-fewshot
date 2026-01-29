@@ -32,7 +32,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 # ============================================
 # PASTE YOUR OPENAI API KEY HERE
 # ============================================
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "paste here please")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "YOUR_API_KEY_HERE")
 # ============================================
 
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -257,20 +257,35 @@ Classification:
 
     prompt = f"""You are an expert clinical documentation analyst specializing in identifying reusable content components in regulatory documents such as clinical trial protocols, statistical analysis plans, clinical study reports, and ICH guidelines.
 
-TASK: Analyze the provided clinical document text and identify ALL distinct reusable components. The document contains [PAGE X] markers indicating page numbers.
+CRITICAL INSTRUCTION: You must identify and extract ALL distinct reusable components from the document. Do NOT skip any components. Be thorough and comprehensive.
+
+TASK: Analyze the provided clinical document text and identify EVERY distinct reusable component. The document contains [PAGE X] markers indicating page numbers.
 
 COMPONENT TAXONOMY:
 {taxonomy_str}
 
 IDENTIFICATION RULES:
-1. Components must be self-contained and semantically complete
-2. Include ALL relevant context within component boundaries
-3. Avoid overlapping components
-4. Prefer larger, meaningful units over small fragments
-5. Minimum component length: 50 characters
-6. Each component should represent a single, coherent concept or section
-7. Track the page number where each component is found (look for [PAGE X] markers)
-8. Identify the section name/number if visible (e.g., "Section 5.1", "12.2 ADVERSE EVENTS")
+1. Extract ALL components - do not skip any reusable content
+2. Components must be self-contained and semantically complete
+3. Include ALL relevant context within component boundaries
+4. Avoid overlapping components
+5. Prefer larger, meaningful units over small fragments
+6. Minimum component length: 50 characters
+7. Each component should represent a single, coherent concept or section
+8. Track the page number where each component is found (look for [PAGE X] markers)
+9. Identify the section name/number if visible (e.g., "Section 5.1", "12.2 ADVERSE EVENTS")
+10. Include definitions, procedures, requirements, guidance, boilerplate text, tables descriptions, etc.
+
+COMPONENT TYPES TO LOOK FOR:
+- Definitions (endpoints, adverse events, terms)
+- Boilerplate/regulatory language (GCP, ethics, compliance)
+- Study sections (objectives, design, criteria)
+- Safety content (AE reporting, dose modifications)
+- Procedures (assessments, visits, sampling)
+- Statistical methods (sample size, analysis plans)
+- CSR structural requirements
+- Regulatory guidance
+- Ethics requirements
 
 {examples_str}
 
@@ -280,7 +295,7 @@ Return a JSON array with this exact structure for each identified component:
   {{
     "type": "component_type",
     "title": "Descriptive title (5-10 words)",
-    "text": "Exact extracted text from the document (copy verbatim)",
+    "text": "Exact extracted text from the document (copy verbatim, include full content)",
     "confidence": 0.95,
     "reuse_potential": "high|medium|low",
     "rationale": "Brief explanation of why this is a reusable component",
@@ -291,10 +306,15 @@ Return a JSON array with this exact structure for each identified component:
   }}
 ]
 
+IMPORTANT: 
+- Extract the COMPLETE text of each component - do not truncate or summarize
+- Include ALL components you find - aim to be exhaustive
+- Copy text verbatim from the document
+
 DOCUMENT TO ANALYZE:
 {document_text}
 
-Identify all reusable components and return ONLY the JSON array, no additional text."""
+Identify ALL reusable components and return ONLY the JSON array, no additional text."""
 
     return prompt
 
@@ -497,7 +517,7 @@ def extract_text_from_docx(file_path):
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
-    """Handle file upload (PDF, DOCX, TXT) and identify components with location tracking."""
+    """Handle file upload (PDF, DOCX, TXT) and identify ALL components without truncation."""
     try:
         if 'file' not in request.files:
             return jsonify({"error": "No file provided"}), 400
@@ -535,24 +555,97 @@ def upload_file():
         if len(document_text.strip()) < 50:
             return jsonify({"error": "Extracted text is too short (less than 50 characters)"}), 400
         
-        # Truncate if too long (to manage API costs and context limits)
-        max_chars = 50000
-        if len(document_text) > max_chars:
-            document_text = document_text[:max_chars]
-            truncated = True
+        total_chars = len(document_text)
+        
+        # Process document in chunks if it's very large
+        # Each chunk should be around 40000 chars to leave room for prompt and response
+        chunk_size = 40000
+        all_components = []
+        chunks_processed = 0
+        
+        if total_chars <= chunk_size:
+            # Small document - process in one go
+            all_components = process_document_chunk(document_text, 0)
+            chunks_processed = 1
         else:
-            truncated = False
+            # Large document - process in chunks by page boundaries
+            if pages_data:
+                # Split by pages for PDF
+                current_chunk = ""
+                current_start_page = 1
+                
+                for page_info in pages_data:
+                    page_text = f"[PAGE {page_info['page']}]\n{page_info['text']}\n\n"
+                    
+                    if len(current_chunk) + len(page_text) > chunk_size and current_chunk:
+                        # Process current chunk
+                        chunk_components = process_document_chunk(current_chunk, current_start_page - 1)
+                        all_components.extend(chunk_components)
+                        chunks_processed += 1
+                        
+                        # Start new chunk
+                        current_chunk = page_text
+                        current_start_page = page_info['page']
+                    else:
+                        current_chunk += page_text
+                
+                # Process final chunk
+                if current_chunk:
+                    chunk_components = process_document_chunk(current_chunk, current_start_page - 1)
+                    all_components.extend(chunk_components)
+                    chunks_processed += 1
+            else:
+                # Non-PDF - split by character count
+                for i in range(0, total_chars, chunk_size):
+                    chunk = document_text[i:i + chunk_size]
+                    chunk_components = process_document_chunk(chunk, i)
+                    all_components.extend(chunk_components)
+                    chunks_processed += 1
         
-        # Build the few-shot prompt
-        prompt = build_few_shot_prompt(document_text)
+        # Deduplicate components based on text similarity
+        unique_components = deduplicate_components(all_components)
         
-        # Call OpenAI API
+        return jsonify({
+            "success": True,
+            "components": unique_components,
+            "total_components": len(unique_components),
+            "total_pages": len(pages_data) if pages_data else None,
+            "model": "gpt-4o-mini",
+            "method": "few-shot",
+            "examples_used": len(FEW_SHOT_EXAMPLES),
+            "filename": file.filename,
+            "text_length": total_chars,
+            "chunks_processed": chunks_processed,
+            "truncated": False  # Never truncate anymore
+        })
+        
+    except json.JSONDecodeError as e:
+        return jsonify({
+            "error": f"Failed to parse model response as JSON: {str(e)}"
+        }), 500
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "error": f"Server error: {str(e)}",
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+def process_document_chunk(chunk_text, chunk_offset=0):
+    """Process a single chunk of document text and return components."""
+    try:
+        prompt = build_few_shot_prompt(chunk_text)
+        
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an expert at identifying reusable components in clinical trial documentation. You always respond with valid JSON arrays only. Include location information (page number and section) for each component."
+                    "content": """You are an expert at identifying reusable components in clinical trial documentation. 
+You must identify ALL reusable components in the document - do not skip any.
+Always respond with valid JSON arrays only. 
+Include location information (page number and section) for each component.
+Be thorough and comprehensive - extract every distinct reusable component you find."""
                 },
                 {
                     "role": "user",
@@ -560,10 +653,9 @@ def upload_file():
                 }
             ],
             temperature=0.0,
-            max_tokens=8000
+            max_tokens=16000  # Maximum output tokens
         )
         
-        # Parse response
         result_text = response.choices[0].message.content.strip()
         
         # Handle markdown code blocks if present
@@ -598,27 +690,30 @@ def upload_file():
             
             validated_components.append(validated_comp)
         
-        return jsonify({
-            "success": True,
-            "components": validated_components,
-            "total_components": len(validated_components),
-            "total_pages": len(pages_data) if pages_data else None,
-            "model": "gpt-4o-mini",
-            "method": "few-shot",
-            "examples_used": len(FEW_SHOT_EXAMPLES),
-            "filename": file.filename,
-            "text_length": len(document_text),
-            "truncated": truncated
-        })
+        return validated_components
         
-    except json.JSONDecodeError as e:
-        return jsonify({
-            "error": f"Failed to parse model response as JSON: {str(e)}"
-        }), 500
     except Exception as e:
-        return jsonify({
-            "error": f"Server error: {str(e)}"
-        }), 500
+        print(f"Error processing chunk: {str(e)}")
+        return []
+
+
+def deduplicate_components(components):
+    """Remove duplicate components based on text similarity."""
+    if not components:
+        return []
+    
+    unique = []
+    seen_texts = set()
+    
+    for comp in components:
+        # Create a normalized version of the text for comparison
+        normalized = comp["text"].lower().strip()[:200]  # Compare first 200 chars
+        
+        if normalized not in seen_texts:
+            seen_texts.add(normalized)
+            unique.append(comp)
+    
+    return unique
 
 
 @app.route('/api/supported-formats', methods=['GET'])

@@ -597,12 +597,13 @@ body {
 }
 
 .component-text-container:not(.expanded) {
-  max-height: 80px;
+  max-height: 120px;
   overflow: hidden;
 }
 
 .component-text-container.expanded {
   max-height: none;
+  overflow: visible;
 }
 
 .component-text {
@@ -610,6 +611,7 @@ body {
   color: #475569;
   line-height: 1.6;
   white-space: pre-wrap;
+  word-wrap: break-word;
   margin: 0;
 }
 
@@ -628,6 +630,13 @@ body {
 .results-panel .panel-header {
   flex-wrap: wrap;
   gap: 0.75rem;
+}
+
+/* Results Container - Allow scrolling for many components */
+.results-container {
+  padding: 1rem;
+  max-height: 800px;
+  overflow-y: auto;
 }
 
 /* Scrollbar Styling */

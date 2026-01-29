@@ -150,7 +150,8 @@ function App() {
         examples: data.examples_used,
         filename: data.filename,
         textLength: data.text_length,
-        truncated: data.truncated
+        chunksProcessed: data.chunks_processed,
+        truncated: false // Never truncated anymore
       })
     } catch (err) {
       setError(err.message)
@@ -426,8 +427,8 @@ function App() {
                     <span className="stats-badge">
                       {stats.total} found
                       {stats.totalPages && ` • ${stats.totalPages} pages`}
+                      {stats.chunksProcessed && stats.chunksProcessed > 1 && ` • ${stats.chunksProcessed} chunks`}
                       {stats.filename && ` • ${stats.filename}`}
-                      {stats.truncated && ' • (truncated)'}
                     </span>
                   )}
                   {components.length > 0 && (
