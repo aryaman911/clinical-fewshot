@@ -199,7 +199,7 @@ body {
 /* Results Container */
 .results-container {
   padding: 1rem;
-  max-height: 700px;
+  max-height: 800px;
   overflow-y: auto;
 }
 
@@ -237,7 +237,6 @@ body {
   border-radius: 0.75rem;
   border-left: 4px solid;
   margin-bottom: 1rem;
-  cursor: pointer;
   transition: all 0.2s;
 }
 
@@ -249,8 +248,23 @@ body {
 .component-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .component-type {
@@ -324,6 +338,11 @@ body {
 .expand-hint {
   font-size: 0.75rem;
   color: #94a3b8;
+  cursor: pointer;
+}
+
+.expand-hint:hover {
+  color: #3b82f6;
 }
 
 .rationale {
@@ -509,42 +528,6 @@ body {
   background: #059669;
 }
 
-/* Component Card Improvements */
-.component-card {
-  padding: 1rem;
-  border-radius: 0.75rem;
-  border-left: 4px solid;
-  margin-bottom: 1rem;
-  transition: all 0.2s;
-}
-
-.component-card:hover {
-  transform: translateX(4px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-}
-
-.component-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 0.5rem;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
 /* Location Badge */
 .location-badge {
   display: flex;
@@ -630,13 +613,6 @@ body {
 .results-panel .panel-header {
   flex-wrap: wrap;
   gap: 0.75rem;
-}
-
-/* Results Container - Allow scrolling for many components */
-.results-container {
-  padding: 1rem;
-  max-height: 800px;
-  overflow-y: auto;
 }
 
 /* Scrollbar Styling */

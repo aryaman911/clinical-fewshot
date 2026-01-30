@@ -1,172 +1,168 @@
 """
 Clinical Component Identifier - Few-Shot Prompting Version
-Uses 8 labeled examples for ~85-95% accuracy
-Supports PDF and DOCX file uploads
+Uses Claude Sonnet with 18 labeled examples for high accuracy
+Supports PDF, DOCX, TXT files up to 50MB
 """
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from openai import OpenAI
+import anthropic
 import json
 import os
 import tempfile
 
-# PDF support (pure Python - no compilation needed)
+# Check for optional dependencies
 try:
     from pypdf import PdfReader
     PDF_SUPPORT = True
 except ImportError:
     PDF_SUPPORT = False
+    print("[WARNING] pypdf not installed. PDF support disabled.")
 
-# DOCX support
 try:
     from docx import Document
     DOCX_SUPPORT = True
 except ImportError:
     DOCX_SUPPORT = False
+    print("[WARNING] python-docx not installed. DOCX support disabled.")
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
 CORS(app)
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    return jsonify({"error": "File too large. Maximum size is 50MB."}), 413
 
 # ============================================
-# PASTE YOUR OPENAI API KEY HERE
+# CONFIGURATION
 # ============================================
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "YOUR_API_KEY_HERE")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "YOUR_API_KEY_HERE")
 # ============================================
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 # Component taxonomy definition - Extended for CSR/ICH Guidelines
 TAXONOMY = {
     "component_types": [
         {
             "name": "boilerplate",
-            "description": "Standard regulatory, administrative, or compliance text that appears across multiple documents",
-            "examples": ["GCP statements", "confidentiality clauses", "regulatory compliance declarations", "ethics statements", "Declaration of Helsinki references"]
+            "description": "Standard regulatory or compliance text that appears across multiple documents (e.g., GCP compliance statements, regulatory references)"
         },
         {
             "name": "definition",
-            "description": "Precise definitions of terms, endpoints, events, or medical/scientific concepts",
-            "examples": ["Primary endpoint definition", "AE definitions", "SAE definitions", "terminology explanations", "inclusion criteria definitions"]
+            "description": "Precise definitions of clinical terms, endpoints, or criteria (e.g., AE definitions, endpoint definitions)"
         },
         {
             "name": "study_section",
-            "description": "Study-specific methodology, procedures, or structural sections",
-            "examples": ["Inclusion/exclusion criteria", "Study objectives", "Statistical methods", "Study design overview", "Patient disposition"]
+            "description": "Study-specific methodology or design elements (e.g., inclusion/exclusion criteria, study objectives)"
         },
         {
             "name": "drug_info",
-            "description": "Information about investigational product, mechanism, pharmacology",
-            "examples": ["Mechanism of action", "Dosing details", "Pharmacokinetics", "Drug formulation", "Product identity"]
+            "description": "Information about investigational product, dosing, or formulation"
         },
         {
             "name": "safety",
-            "description": "Safety monitoring, adverse event reporting, or risk-related procedures",
-            "examples": ["AE reporting procedures", "Safety assessments", "Dose modification for toxicity", "Risk mitigation", "Deaths and SAEs"]
+            "description": "Safety monitoring, adverse event reporting, or dose modification guidelines"
         },
         {
             "name": "procedure",
-            "description": "Clinical or laboratory procedures, sample collection, assessments",
-            "examples": ["Blood sampling procedures", "Visit schedules", "Laboratory assessments", "Physical examination procedures"]
+            "description": "Clinical or laboratory procedures, assessments, or sampling instructions"
         },
         {
             "name": "csr_structure",
-            "description": "Clinical Study Report structural elements, section headers, and organizational guidance from ICH E3",
-            "examples": ["Title page requirements", "Synopsis format", "Table of contents structure", "Appendix listings", "Section numbering guidance"]
+            "description": "ICH E3 Clinical Study Report structural elements, section headers, and organizational guidance"
         },
         {
             "name": "statistical",
-            "description": "Statistical methodology, analysis plans, sample size calculations, and data handling",
-            "examples": ["Sample size determination", "Statistical analysis plans", "Handling of missing data", "Interim analyses", "Multiplicity adjustments"]
+            "description": "Statistical methodology, analysis plans, sample size calculations, and data handling procedures"
         },
         {
             "name": "regulatory_guidance",
-            "description": "ICH guidelines, regulatory requirements, submission formats, and compliance instructions",
-            "examples": ["ICH E3 requirements", "Regional regulatory requirements", "Submission format guidance", "Data listing requirements"]
+            "description": "ICH guidelines, regulatory submission requirements, and compliance instructions"
         },
         {
             "name": "ethics",
-            "description": "Ethics committee requirements, informed consent procedures, patient rights",
-            "examples": ["IRB/IEC approval requirements", "Informed consent procedures", "Patient confidentiality", "Ethical conduct statements"]
+            "description": "IRB/IEC requirements, informed consent procedures, Declaration of Helsinki references, and patient rights"
         }
     ]
 }
 
-# Few-shot examples from real clinical trial documents (Niraparib Protocol PR-30-5015-C and ICH E3 CSR Template)
+# Few-shot examples for clinical component identification - Extended with CSR examples
 FEW_SHOT_EXAMPLES = [
+    # Original Protocol Examples
     {
         "text": "This clinical investigation will be conducted according to this clinical protocol and in compliance with Good Clinical Practice (GCP), with the Declaration of Helsinki (Version 2008), and with other applicable regulatory requirements.",
         "type": "boilerplate",
-        "title": "GCP and Regulatory Compliance Statement",
+        "title": "GCP Compliance Statement",
         "confidence": 0.98,
         "reuse_potential": "high",
-        "rationale": "Standard regulatory compliance language that appears in virtually all clinical trial protocols worldwide. References GCP, Declaration of Helsinki, and regulatory requirements."
+        "rationale": "Standard regulatory compliance language found in virtually all clinical protocols. Can be reused with minimal modification."
     },
     {
         "text": "Overall survival is defined as the time from randomization to death from any cause. Subjects who have not died will be censored at the date last known alive.",
         "type": "definition",
-        "title": "Overall Survival (OS) Endpoint Definition",
+        "title": "Overall Survival Endpoint Definition",
         "confidence": 0.97,
         "reuse_potential": "high",
-        "rationale": "Precise scientific definition of a primary endpoint with clear measurement criteria and censoring rules. Standard oncology endpoint definition."
+        "rationale": "Standard endpoint definition used across oncology trials. Highly reusable with consistent wording."
     },
     {
-        "text": "Subject Inclusion Criteria: 1. Subject has provided signed written informed consent. 2. Subject is ≥18 years of age. 3. Subject has histologically confirmed diagnosis of advanced solid tumor that has recurred or progressed following standard therapy, or subject has refused standard therapy; and subject may benefit from treatment with a PARP inhibitor. 4. Subject has adequate organ function: a. Absolute neutrophil count ≥1500/µL b. Platelets ≥150,000/µL c. Hemoglobin ≥9 g/dL",
+        "text": "Subject Inclusion Criteria: 1. Subject has provided signed written informed consent. 2. Subject is >=18 years of age. 3. Subject has histologically confirmed diagnosis of advanced solid tumor.",
         "type": "study_section",
-        "title": "Subject Inclusion Criteria",
+        "title": "Basic Inclusion Criteria",
         "confidence": 0.96,
         "reuse_potential": "medium",
-        "rationale": "Study-specific eligibility criteria section with numbered list of requirements. Contains both standard elements (age, consent) and study-specific requirements (PARP inhibitor candidacy)."
+        "rationale": "Common inclusion criteria structure. Items 1-2 are highly reusable; item 3 is study-specific."
     },
     {
-        "text": "Niraparib is an orally active poly (adenosine diphosphate [ADP]-ribose) polymerase (PARP)-1 and -2 inhibitor with nanomolar potency that is being developed for tumors with defects in the homologous recombination (HR) deoxyribonucleic acid (DNA) repair pathway or that are driven by PARP-mediated transcription factors.",
+        "text": "Niraparib is an orally active poly (adenosine diphosphate [ADP]-ribose) polymerase (PARP)-1 and -2 inhibitor with nanomolar potency.",
         "type": "drug_info",
-        "title": "Niraparib Mechanism of Action",
+        "title": "Drug Mechanism of Action",
         "confidence": 0.97,
         "reuse_potential": "high",
-        "rationale": "Drug mechanism description explaining the pharmacological action of the investigational product. Describes molecular targets (PARP-1/2) and therapeutic rationale."
+        "rationale": "Standard drug description text that can be reused across all protocols involving this compound."
     },
     {
-        "text": "Dose interruption and/or reduction may be implemented at any time for any grade toxicity considered intolerable by the subject. Treatment must be interrupted for any nonhematologic NCI-CTCAE Grade 3 or 4 AE that the Investigator considers to be related to administration of niraparib. If toxicity is appropriately resolved to baseline or CTCAE Grade 1 or less within 28 days of dose interruption, at the Investigator's discretion the subject may restart treatment with niraparib.",
+        "text": "Dose interruption and/or reduction may be implemented at any time for any grade toxicity considered intolerable by the subject. Treatment must be interrupted for any nonhematologic NCI-CTCAE Grade 3 or 4 AE.",
         "type": "safety",
-        "title": "Dose Modification for Toxicity Management",
+        "title": "Dose Modification for Toxicity",
         "confidence": 0.95,
         "reuse_potential": "medium",
-        "rationale": "Safety-related dose modification guidance using standard CTCAE grading. Provides clear criteria for dose interruption and resumption based on toxicity resolution."
+        "rationale": "Safety dose modification guidance. Structure is reusable but thresholds may vary by study."
     },
     {
-        "text": "Blood samples for PK analysis will be collected at the following times: predose (0 hour, within 30 min prior to dose), Day 1 (1, 1.5, 2, 3, 4, 6, and 12 hours postdose), Day 2 (24 hours postdose), Day 3 (48 hours postdose), Day 4 (72 hours postdose), Day 5 (96 hours postdose).",
+        "text": "Blood samples for PK analysis will be collected at the following times: predose (0 hour), Day 1 (1, 1.5, 2, 3, 4, 6, and 12 hours postdose), Day 2 (24 hours postdose).",
         "type": "procedure",
-        "title": "Pharmacokinetic Blood Sampling Schedule",
+        "title": "PK Blood Sampling Schedule",
         "confidence": 0.96,
         "reuse_potential": "medium",
-        "rationale": "Detailed procedural timeline for sample collection with specific timepoints. Standard PK sampling procedure that could be adapted for similar studies."
+        "rationale": "PK sampling procedure template. Timing may vary but format is standard."
     },
     {
-        "text": "An adverse event (AE) is any untoward medical occurrence in a patient or clinical investigation subject administered a pharmaceutical product that does not necessarily have a causal relationship with this treatment. An AE can therefore be any unfavorable and unintended sign, symptom, or disease temporally associated with the use of a medicinal product.",
+        "text": "An adverse event (AE) is any untoward medical occurrence in a patient or clinical investigation subject administered a pharmaceutical product that does not necessarily have a causal relationship with this treatment.",
         "type": "definition",
-        "title": "Adverse Event (AE) Definition",
+        "title": "Adverse Event Definition",
         "confidence": 0.98,
         "reuse_potential": "high",
-        "rationale": "Standard regulatory definition of adverse events from ICH guidelines. Highly reusable boilerplate definition used across all clinical trials."
+        "rationale": "ICH-standard AE definition. Used verbatim across all clinical trials."
     },
     {
-        "text": "To determine the absolute bioavailability of niraparib by using an intravenous (IV) niraparib microdose of 100 μg (containing approximately 1 μCi of [14C]-niraparib) in subjects with cancer.",
+        "text": "To determine the absolute bioavailability of niraparib by using an intravenous (IV) niraparib microdose of 100 ug in subjects with cancer.",
         "type": "study_section",
         "title": "Primary Study Objective",
         "confidence": 0.95,
         "reuse_potential": "low",
-        "rationale": "Study-specific primary objective statement. While the format is reusable, the specific objective is unique to this bioavailability study."
+        "rationale": "Study-specific objective. Structure can be templated but content is unique."
     },
-    # ICH E3 CSR Template Examples
+    # New CSR/ICH E3 Examples
     {
-        "text": "The title page should contain the following information: study title, name of test drug/investigational product, indication studied, if not apparent from the title, a brief (1 to 2 sentences) description giving design (parallel, cross-over, blinding, randomised) comparison (placebo, active, dose/response), duration, dose, and patient population, name of the sponsor, protocol identification (code or number), development phase of study.",
+        "text": "The title page should contain the following information: study title, name of test drug/investigational product, indication studied, name of the sponsor, protocol identification, development phase of study, study initiation date, study completion date, name and affiliation of principal investigator, statement indicating compliance with Good Clinical Practices.",
         "type": "csr_structure",
         "title": "CSR Title Page Requirements",
         "confidence": 0.96,
         "reuse_potential": "high",
-        "rationale": "ICH E3 mandated structure for Clinical Study Report title page. Standard regulatory requirement applicable to all clinical study reports submitted to regulatory authorities."
+        "rationale": "ICH E3 guidance on title page structure. Standard template for all clinical study reports."
     },
     {
         "text": "A brief synopsis (usually limited to 3 pages) that summarises the study should be provided. The synopsis should include numerical data to illustrate results, not just text or p-values.",
@@ -326,7 +322,7 @@ def health_check():
         "status": "healthy",
         "service": "Clinical Component Identifier (Few-Shot)",
         "version": "2.0",
-        "model": "gpt-4o-mini",
+        "model": "claude-sonnet-4-20250514",
         "examples": len(FEW_SHOT_EXAMPLES)
     })
 
@@ -338,39 +334,31 @@ def identify_components():
         data = request.get_json()
         
         if not data or 'text' not in data:
-            return jsonify({
-                "error": "Missing 'text' field in request body"
-            }), 400
+            return jsonify({"error": "Missing 'text' field in request body"}), 400
         
         document_text = data['text'].strip()
         
         if len(document_text) < 50:
-            return jsonify({
-                "error": "Document text must be at least 50 characters"
-            }), 400
+            return jsonify({"error": "Text must be at least 50 characters long"}), 400
         
         # Build the few-shot prompt
         prompt = build_few_shot_prompt(document_text)
         
-        # Call OpenAI API
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        # Call Claude API
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=16000,
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are an expert at identifying reusable components in clinical trial documentation. You always respond with valid JSON arrays only."
-                },
                 {
                     "role": "user",
                     "content": prompt
                 }
             ],
-            temperature=0.0,  # Use 0 for consistent results
-            max_tokens=4000
+            system="You are an expert at identifying reusable components in clinical trial documentation. You always respond with valid JSON arrays only."
         )
         
         # Parse response
-        result_text = response.choices[0].message.content.strip()
+        result_text = response.content[0].text.strip()
         
         # Handle markdown code blocks if present
         if '```json' in result_text:
@@ -380,23 +368,28 @@ def identify_components():
         
         components = json.loads(result_text)
         
-        # Validate and enrich components
+        # Validate components
         validated_components = []
+        valid_types = [t["name"] for t in TAXONOMY["component_types"]]
+        
         for comp in components:
-            # Ensure required fields
+            location = comp.get("location", {})
             validated_comp = {
                 "type": comp.get("type", "unknown"),
                 "title": comp.get("title", "Untitled Component"),
                 "text": comp.get("text", ""),
                 "confidence": float(comp.get("confidence", 0.8)),
                 "reuse_potential": comp.get("reuse_potential", "medium"),
-                "rationale": comp.get("rationale", "")
+                "rationale": comp.get("rationale", ""),
+                "location": {
+                    "page": location.get("page") if isinstance(location, dict) else None,
+                    "section": location.get("section") if isinstance(location, dict) else None
+                }
             }
             
-            # Validate component type
-            valid_types = [t["name"] for t in TAXONOMY["component_types"]]
+            # Validate type
             if validated_comp["type"] not in valid_types:
-                validated_comp["type"] = "study_section"  # Default fallback
+                validated_comp["type"] = "study_section"
             
             validated_components.append(validated_comp)
         
@@ -404,15 +397,14 @@ def identify_components():
             "success": True,
             "components": validated_components,
             "total_components": len(validated_components),
-            "model": "gpt-4o-mini",
+            "model": "claude-sonnet-4-20250514",
             "method": "few-shot",
             "examples_used": len(FEW_SHOT_EXAMPLES)
         })
         
     except json.JSONDecodeError as e:
         return jsonify({
-            "error": f"Failed to parse model response as JSON: {str(e)}",
-            "raw_response": result_text if 'result_text' in locals() else None
+            "error": f"Failed to parse model response as JSON: {str(e)}"
         }), 500
     except Exception as e:
         return jsonify({
@@ -424,15 +416,6 @@ def identify_components():
 def get_taxonomy():
     """Return the component taxonomy."""
     return jsonify(TAXONOMY)
-
-
-@app.route('/api/examples', methods=['GET'])
-def get_examples():
-    """Return the few-shot examples."""
-    return jsonify({
-        "examples": FEW_SHOT_EXAMPLES,
-        "total": len(FEW_SHOT_EXAMPLES)
-    })
 
 
 def extract_text_from_pdf(file_path):
@@ -558,8 +541,8 @@ def upload_file():
         total_chars = len(document_text)
         
         # Process document in chunks if it's very large
-        # Each chunk should be around 40000 chars to leave room for prompt and response
-        chunk_size = 40000
+        # Each chunk should be around 25000 chars to leave room for prompt and response
+        chunk_size = 25000
         all_components = []
         chunks_processed = 0
         
@@ -610,7 +593,7 @@ def upload_file():
             "components": unique_components,
             "total_components": len(unique_components),
             "total_pages": len(pages_data) if pages_data else None,
-            "model": "gpt-4o-mini",
+            "model": "claude-sonnet-4-20250514",
             "method": "few-shot",
             "examples_used": len(FEW_SHOT_EXAMPLES),
             "filename": file.filename,
@@ -636,27 +619,23 @@ def process_document_chunk(chunk_text, chunk_offset=0):
     try:
         prompt = build_few_shot_prompt(chunk_text)
         
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=16000,
             messages=[
-                {
-                    "role": "system",
-                    "content": """You are an expert at identifying reusable components in clinical trial documentation. 
-You must identify ALL reusable components in the document - do not skip any.
-Always respond with valid JSON arrays only. 
-Include location information (page number and section) for each component.
-Be thorough and comprehensive - extract every distinct reusable component you find."""
-                },
                 {
                     "role": "user",
                     "content": prompt
                 }
             ],
-            temperature=0.0,
-            max_tokens=16000  # Maximum output tokens
+            system="""You are an expert at identifying reusable components in clinical trial documentation. 
+You must identify ALL reusable components in the document - do not skip any.
+Always respond with valid JSON arrays only. 
+Include location information (page number and section) for each component.
+Be thorough and comprehensive - extract every distinct reusable component you find."""
         )
         
-        result_text = response.choices[0].message.content.strip()
+        result_text = response.content[0].text.strip()
         
         # Handle markdown code blocks if present
         if '```json' in result_text:
@@ -724,7 +703,8 @@ def get_supported_formats():
             {"extension": ".pdf", "name": "PDF", "supported": PDF_SUPPORT},
             {"extension": ".docx", "name": "Word Document", "supported": DOCX_SUPPORT},
             {"extension": ".txt", "name": "Plain Text", "supported": True}
-        ]
+        ],
+        "max_size_mb": 50
     })
 
 
@@ -732,17 +712,15 @@ if __name__ == '__main__':
     print("=" * 60)
     print("Clinical Component Identifier - Few-Shot Version")
     print("=" * 60)
-    print(f"Model: gpt-4o-mini")
+    print(f"Model: claude-sonnet-4-20250514")
     print(f"Few-shot examples: {len(FEW_SHOT_EXAMPLES)}")
     print(f"Expected accuracy: 85-95%")
-    print(f"PDF Support: {'Yes' if PDF_SUPPORT else 'No (install pypdf)'}")
-    print(f"DOCX Support: {'Yes' if DOCX_SUPPORT else 'No (install python-docx)'}")
+    print(f"PDF Support: {PDF_SUPPORT}")
+    print(f"DOCX Support: {DOCX_SUPPORT}")
+    print(f"Max File Size: 50MB")
     print("=" * 60)
     
-    if OPENAI_API_KEY == "YOUR_API_KEY_HERE":
-        print("\n⚠️  WARNING: Please set your OpenAI API key!")
-        print("   Option 1: Set environment variable OPENAI_API_KEY")
-        print("   Option 2: Edit app.py line 31 and paste your key")
-        print()
+    if ANTHROPIC_API_KEY == "YOUR_API_KEY_HERE":
+        print("\n[WARNING] Set your Anthropic API key in app.py or as environment variable ANTHROPIC_API_KEY\n")
     
     app.run(host='0.0.0.0', port=5000, debug=True)

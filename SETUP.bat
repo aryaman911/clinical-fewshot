@@ -47,7 +47,7 @@ echo   SETUP COMPLETE!
 echo ============================================================
 echo.
 echo NEXT STEPS:
-echo   1. Edit backend\app.py and add your OpenAI API key on line 35
+echo   1. Edit backend\app.py and add your Anthropic API key on line 38
 echo   2. Run START.bat to launch the application
 echo.
 pause

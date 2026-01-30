@@ -73,6 +73,7 @@ function App() {
   const [expandedComponent, setExpandedComponent] = useState(null)
   const [dragActive, setDragActive] = useState(false)
   const [copiedIndex, setCopiedIndex] = useState(null)
+  const [processingStatus, setProcessingStatus] = useState('')
   const fileInputRef = useRef(null)
 
   const identifyFromText = async () => {
@@ -85,15 +86,22 @@ function App() {
     setError(null)
     setComponents([])
     setStats(null)
+    setProcessingStatus('Analyzing text...')
 
     try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 300000) // 5 minute timeout
+
       const response = await fetch(`${API_URL}/api/identify`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ text: inputText })
+        body: JSON.stringify({ text: inputText }),
+        signal: controller.signal
       })
+
+      clearTimeout(timeoutId)
 
       const data = await response.json()
 
@@ -109,9 +117,14 @@ function App() {
         examples: data.examples_used
       })
     } catch (err) {
-      setError(err.message)
+      if (err.name === 'AbortError') {
+        setError('Request timed out. Please try with a smaller text.')
+      } else {
+        setError(err.message)
+      }
     } finally {
       setLoading(false)
+      setProcessingStatus('')
     }
   }
 
@@ -125,15 +138,24 @@ function App() {
     setError(null)
     setComponents([])
     setStats(null)
+    setProcessingStatus('Uploading file...')
 
     try {
       const formData = new FormData()
       formData.append('file', selectedFile)
 
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 600000) // 10 minute timeout
+
+      setProcessingStatus('Processing document (this may take a few minutes for large files)...')
+
       const response = await fetch(`${API_URL}/api/upload`, {
         method: 'POST',
-        body: formData
+        body: formData,
+        signal: controller.signal
       })
+
+      clearTimeout(timeoutId)
 
       const data = await response.json()
 
@@ -151,12 +173,17 @@ function App() {
         filename: data.filename,
         textLength: data.text_length,
         chunksProcessed: data.chunks_processed,
-        truncated: false // Never truncated anymore
+        truncated: false
       })
     } catch (err) {
-      setError(err.message)
+      if (err.name === 'AbortError') {
+        setError('Request timed out. The file may be too large or complex. Please try a smaller file.')
+      } else {
+        setError(err.message)
+      }
     } finally {
       setLoading(false)
+      setProcessingStatus('')
     }
   }
 
@@ -279,7 +306,7 @@ function App() {
             </svg>
             <h1>Clinical Component Identifier</h1>
           </div>
-          <span className="badge">Few-Shot (18 examples) • CSR/ICH E3 Ready • ~85-95% accuracy</span>
+          <span className="badge">Claude Sonnet • Few-Shot (18 examples) • CSR/ICH E3 Ready</span>
         </div>
       </header>
 
@@ -388,7 +415,7 @@ function App() {
                           <line x1="12" y1="3" x2="12" y2="15"></line>
                         </svg>
                         <p>Drag & drop a file here, or click to browse</p>
-                        <p className="supported-formats">Supported: PDF, DOCX, TXT (max 16MB)</p>
+                        <p className="supported-formats">Supported: PDF, DOCX, TXT (up to 50MB)</p>
                       </div>
                     )}
                   </div>
@@ -405,7 +432,7 @@ function App() {
                     <svg className="spinner" width="20" height="20" viewBox="0 0 24 24">
                       <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" fill="none" strokeDasharray="60" strokeLinecap="round" />
                     </svg>
-                    Analyzing...
+                    {processingStatus || 'Analyzing...'}
                   </>
                 ) : (
                   <>
@@ -575,7 +602,7 @@ function App() {
       </main>
 
       <footer className="footer">
-        <p>Powered by OpenAI GPT-4o-mini • Few-Shot Prompting with 18 Clinical Examples • ICH E3 CSR Ready • Supports PDF, DOCX, TXT</p>
+        <p>Powered by Claude Sonnet • Few-Shot Prompting with 18 Clinical Examples • ICH E3 CSR Ready • Supports PDF, DOCX, TXT (up to 50MB)</p>
       </footer>
     </div>
   )
